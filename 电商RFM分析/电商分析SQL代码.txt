@@ -1,0 +1,117 @@
+#创建表格
+create table e_behavior like test
+insert into e_behavior select DISTINCT * from test; 
+#计算缺失值
+SELECT COUNT(*) FROM e_behavior
+SELECT COUNT(*) FROM test;
+SELECT
+	sum( CASE WHEN CustomerID IS NULL THEN 1 ELSE 0 END ) AS '客户编号',
+	SUM( CASE WHEN InvoiceNo IS NULL THEN 1 ELSE 0 END ) AS '发票编号',
+	sum( CASE WHEN StockCode IS NULL THEN 1 ELSE 0 END ) AS '产品编号',
+	sum( CASE WHEN Quantity IS NULL THEN 1 ELSE 0 END ) AS '数量',
+	SUM( CASE WHEN InvoiceTime IS NULL THEN 1 ELSE 0 END ) AS '发票时间',
+	SUM( CASE WHEN UnitPrice IS NULL THEN 1 ELSE 0 END ) AS '单价',
+	SUM( CASE WHEN Country IS NULL THEN 1 ELSE 0 END ) AS '国家' 
+FROM
+	e_behavior;
+
+UPDATE e_behavior  set CustomerID=0 WHERE CustomerID is NULL;#填充空值，效率极低
+alter table e_behavior drop COLUMN Description #删除不必要数据
+
+SELECT max(InvoiceTime),min(InvoiceTime) from e_behavior； #计算时间是否在范围内
+SELECT max(UnitPrice),min(UnitPrice),max(Quantity),min(Quantity) from e_behavior；#查看销量和单价是否有异常
+select * from e_behavior where Quantity<=0;
+
+#删除异常值
+DELETE from  e_behavior where Quantity<0
+DELETE from e_behavior where UnitPrice<0;
+#数据格式化一致(日期)
+alter table e_behavior add COLUMN Dtime varchar(255) not null
+update e_behavior SET Dtime=str_to_date(InvoiceTime,'%m/%d/%Y %H:%i');
+
+alter TABLE e_behavior add COLUMN Amount VARCHAR(255) not null
+update e_behavior SET Amount=round(Quantity*UnitPrice,2);
+#RFM分析
+CREATE TABLE RFM 
+SELECT
+CustomerID,
+Country,
+datediff('2011-12-09', Max(Dtime) ) AS '天数差',
+count( DISTINCT InvoiceNo ) AS '交易次数',
+sum(Amount) AS '交易金额'
+FROM
+	e_behavior 
+GROUP BY
+	CustomerID 
+ORDER BY
+	天数差 ASC, 交易金额 DESC,交易次数 DESC;
+update rfm set 交易金额=ROUND(交易金额,2);#查询到Customer ID为0是个异常值，可向业务部门问清，这里先排产掉
+#删除异常值
+DELETE FROM rfm WHERE CustomerID=0;
+DELETE FROM rfm WHERE 交易金额=0;
+
+#实际中的RFM评分需要和业务部门沟通确认，这里我们用python中的describe确定数值的分类
+
+CREATE table rfm_point
+SELECT CustomerID, (CASE when 天数差<=20 then 5 
+when 天数差 BETWEEN 21 and 50 then 4
+when 天数差 BETWEEN 51 and 100 then 3 
+when 天数差 BETWEEN 101 and 150 then 2 
+else 1 end) as R_point, 
+(CASE when 交易金额<=1000 then 1
+when 天数差 BETWEEN 1001 and 2000 then 2
+when 天数差 BETWEEN 2001 and 3000 then 3 
+when 天数差 BETWEEN 3000 and 5000 then 4 
+else 5 end) as M_point,
+(CASE when 交易次数<2 then 1
+when 天数差 BETWEEN 2 and 3 then 2
+when 天数差 BETWEEN 4 and 6 then 3 
+when 天数差 BETWEEN 7 and 10 then 4 
+else 5 end) as F_point
+from rfm;
+#确认RFM值的平均数
+SELECT AVG(R_point),AVG(F_point),AVG(M_point) from rfm_point;
+CREATE TABLE 顾客分级 
+SELECT
+	CustomerID,
+	( CASE WHEN R_point > 3.2 THEN 1 ELSE 0 END ) AS R评分,
+	( CASE WHEN F_point > 3.3 THEN 1 ELSE 0 END ) AS F评分,
+	( CASE WHEN M_point > 2.5 THEN 1 ELSE 0 END ) AS M评分 
+FROM
+	rfm_point;
+
+CREATE TABLE 客户分析 SELECT
+*,
+(CASE
+	
+	WHEN R评分 = 1 
+	AND F评分 = 1 
+	AND M评分 = 1 THEN
+	'重要价值客户' 
+	WHEN R评分 = 0 
+	AND F评分 = 1 
+	AND M评分 = 1 THEN
+	'重要唤回客户' 
+	WHEN R评分 = 1 
+	AND F评分 = 0 
+	AND M评分 = 1 THEN
+	'重要深耕客户' 
+	WHEN R评分 = 0 
+	AND F评分 = 0 
+	AND M评分 = 1 THEN
+	'重要挽留客户' 
+	WHEN R评分 = 1 
+	AND F评分 = 1 
+	AND M评分 = 0 THEN
+	'潜力客户' 
+	WHEN R评分 = 1 
+	AND F评分 = 0 
+	AND M评分 = 0 THEN
+	'新客户' 
+	WHEN R评分 = 0 
+	AND F评分 = 1 
+	AND M评分 = 0 THEN
+	'一般维持客户' ELSE '流失客户' 
+	END) AS '客户分层' 
+FROM
+	顾客分级;
